@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>XLSM Unlocker — Remove Excel Sheet Protection</title>
+  <meta name="description" content="Free browser-based tool to remove password protection from .xlsm and .xlsx files including e-IPCRF forms. No upload, works 100% offline." />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="bg-grid"></div>
+
+  <header>
+    <div class="logo">
+      <svg width="32" height="32" viewBox="0 0 32 32" fill="none"><rect width="32" height="32" rx="8" fill="#1D9E75"/><path d="M8 10h10M8 14h10M8 18h6" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><rect x="16" y="16" width="10" height="10" rx="3" fill="#fff" opacity="0.15"/><path d="M21 19v2.5M21 23h.01" stroke="#fff" stroke-width="1.8" stroke-linecap="round"/><circle cx="21" cy="21" r="4.5" stroke="#fff" stroke-width="1.5"/></svg>
+      <span>XLSM Unlocker</span>
+    </div>
+    <a href="https://github.com/trashpenguin/xlsm-unlocker" target="_blank" class="gh-link">
+      <svg width="18" height="18" viewBox="0 0 24 24" fill="currentColor"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0 0 24 12c0-6.63-5.37-12-12-12z"/></svg>
+      View on GitHub
+    </a>
+  </header>
+
+  <main>
+    <section class="hero">
+      <h1>Remove Excel Protection<br><span class="accent">Instantly. In Your Browser.</span></h1>
+      <p class="sub">Unlock .xlsm and .xlsx files — including <strong>e-IPCRF</strong> forms — without any software. Your file never leaves your device.</p>
+    </section>
+
+    <div class="card" id="upload-card">
+      <div id="drop-zone" role="button" tabindex="0" aria-label="Upload Excel file">
+        <div class="dz-icon">
+          <svg width="48" height="48" viewBox="0 0 48 48" fill="none"><rect width="48" height="48" rx="12" fill="#E1F5EE"/><path d="M14 18h14M14 24h14M14 30h8" stroke="#1D9E75" stroke-width="2" stroke-linecap="round"/><path d="M32 26v10M27 31l5 5 5-5" stroke="#1D9E75" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </div>
+        <p class="dz-title">Drop your file here</p>
+        <p class="dz-sub">or <button onclick="document.getElementById('file-input').click()" class="inline-btn">browse files</button></p>
+        <p class="dz-hint">Supports .xlsm and .xlsx</p>
+      </div>
+      <input type="file" id="file-input" accept=".xlsm,.xlsx" />
+    </div>
+
+    <div class="card" id="result-card" style="display:none">
+      <div class="file-row">
+        <div class="file-icon">
+          <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="#1D9E75" stroke-width="1.5"/><path d="M14 2v6h6" stroke="#1D9E75" stroke-width="1.5"/><path d="M8 13h8M8 17h5" stroke="#1D9E75" stroke-width="1.5" stroke-linecap="round"/></svg>
+        </div>
+        <div class="file-meta">
+          <strong id="fname"></strong>
+          <span id="fsize"></span>
+        </div>
+      </div>
+
+      <ul class="log" id="log"></ul>
+      <div id="error-box" class="error-box" style="display:none"></div>
+
+      <div id="success-row" class="success-row" style="display:none">
+        <div class="result-badge" id="result-badge"></div>
+        <button class="btn-download" id="dl-btn" onclick="downloadFile()">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"><path d="M12 3v13M7 11l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Download Unlocked File
+        </button>
+      </div>
+    </div>
+
+    <button class="btn-reset" id="reset-btn" onclick="reset()" style="display:none">↩ Unlock another file</button>
+
+    <section class="features">
+      <div class="feat">
+        <div class="feat-icon">🔒</div>
+        <h3>Removes all locks</h3>
+        <p>Strips workbook-level and sheet-level protection — including SHA-512 encrypted locks used by e-IPCRF.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">🛡️</div>
+        <h3>100% private</h3>
+        <p>Everything runs in your browser using JavaScript. Your file is never uploaded to any server.</p>
+      </div>
+      <div class="feat">
+        <div class="feat-icon">⚡</div>
+        <h3>Instant results</h3>
+        <p>No installation, no sign-up, no waiting. Drop the file and download the unlocked version in seconds.</p>
+      </div>
+    </section>
+
+    <section class="faq">
+      <h2>Frequently Asked Questions</h2>
+      <details open>
+        <summary>Does this work on e-IPCRF files?</summary>
+        <p>Yes! This tool was specifically built to unlock e-IPCRF .xlsm files used by DepEd teachers in the Philippines. It removes the finalization locks so you can continue editing.</p>
+      </details>
+      <details>
+        <summary>Will the macros still work after unlocking?</summary>
+        <p>Yes, the VBA macros inside the file are untouched. Only the XML-level protection tags are removed. Note: avoid clicking the "Finalize" button inside the form or it will re-lock the file.</p>
+      </details>
+      <details>
+        <summary>Is my data safe?</summary>
+        <p>Absolutely. This tool uses JSZip to process your file entirely in your browser. Nothing is sent to any server. You can even use it offline after the page has loaded.</p>
+      </details>
+      <details>
+        <summary>What if the file still can't be edited after unlocking?</summary>
+        <p>Some cells may be individually marked as "locked" in their cell format. In Excel, go to Review → Unprotect Sheet, or select all cells → Format Cells → Protection → uncheck "Locked".</p>
+      </details>
+    </section>
+  </main>
+
+  <footer>
+    <p>Made with ❤️ by <a href="https://github.com/trashpenguin" target="_blank">trashpenguin</a> · Open source on <a href="https://github.com/trashpenguin/xlsm-unlocker" target="_blank">GitHub</a></p>
+    <p class="footer-sub">Free forever · No ads · No tracking</p>
+  </footer>
+
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>
