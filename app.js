@@ -1,149 +1,408 @@
-let outputBlob = null;
-let outputName = '';
+let processedFiles = [];
+let pendingFile = null;
+let pendingZip = null;
+let pendingSheets = []; // { path, name, protected }
+let pendingWbProtected = false;
 
-const dropZone = document.getElementById('drop-zone');
-const fileInput = document.getElementById('file-input');
 const uploadCard = document.getElementById('upload-card');
+const selectCard = document.getElementById('select-card');
 const resultCard = document.getElementById('result-card');
-const resetBtn = document.getElementById('reset-btn');
+const resetBtn   = document.getElementById('reset-btn');
+const dropZone   = document.getElementById('drop-zone');
+const fileInput  = document.getElementById('file-input');
 
+// ── Whole-page drag overlay ──────────────────────────────────────────────────
+let dragCounter = 0;
+
+document.addEventListener('dragenter', e => {
+  if ([...( e.dataTransfer?.types ?? [])].includes('Files')) {
+    e.preventDefault();
+    if (++dragCounter === 1) document.body.classList.add('dragging');
+  }
+});
+document.addEventListener('dragleave', () => {
+  if (--dragCounter <= 0) { dragCounter = 0; document.body.classList.remove('dragging'); }
+});
+document.addEventListener('dragover', e => e.preventDefault());
+document.addEventListener('drop', e => {
+  e.preventDefault();
+  dragCounter = 0;
+  document.body.classList.remove('dragging');
+  const files = validFiles(e.dataTransfer.files);
+  if (files.length) handleFiles(files);
+});
+
+// ── Paste support ────────────────────────────────────────────────────────────
+document.addEventListener('paste', e => {
+  const files = validFiles(e.clipboardData?.files ?? []);
+  if (files.length) handleFiles(files);
+});
+
+// ── Drop zone ────────────────────────────────────────────────────────────────
 dropZone.addEventListener('dragover', e => { e.preventDefault(); dropZone.classList.add('active'); });
 dropZone.addEventListener('dragleave', () => dropZone.classList.remove('active'));
-dropZone.addEventListener('drop', e => { e.preventDefault(); dropZone.classList.remove('active'); handleFile(e.dataTransfer.files[0]); });
+dropZone.addEventListener('drop', () => dropZone.classList.remove('active'));
 dropZone.addEventListener('keydown', e => { if (e.key === 'Enter' || e.key === ' ') fileInput.click(); });
-fileInput.addEventListener('change', () => handleFile(fileInput.files[0]));
+fileInput.addEventListener('change', () => {
+  const files = validFiles(fileInput.files);
+  if (files.length) handleFiles(files);
+});
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+function validFiles(list) {
+  return [...(list ?? [])].filter(f => /\.(xlsm|xlsx)$/i.test(f.name));
+}
 
 function fmtSize(b) {
   return b > 1048576 ? (b / 1048576).toFixed(1) + ' MB' : Math.round(b / 1024) + ' KB';
 }
 
-function addLog(type, text) {
-  const li = document.createElement('li');
-  let dot;
-  if (type === 'loading') {
-    dot = '<span class="dot-spin"></span>';
-  } else if (type === 'ok') {
-    dot = '<span class="dot dot-green"></span>';
-  } else {
-    dot = '<span class="dot dot-gray"></span>';
-  }
-  li.innerHTML = dot + text;
-  li.id = 'log-' + Date.now();
-  document.getElementById('log').appendChild(li);
-  return li;
+function esc(s) {
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
-async function handleFile(file) {
-  if (!file) return;
-  if (!/\.(xlsm|xlsx)$/i.test(file.name)) {
-    alert('Please upload an .xlsm or .xlsx file.');
-    return;
+function friendlyError(err) {
+  const m = err.message || '';
+  if (/not a zip/i.test(m))           return 'This doesn\'t appear to be a valid Excel file.';
+  if (/corrupt/i.test(m))             return 'The file appears to be corrupted or incomplete.';
+  if (/password|encrypt/i.test(m))    return 'This file is password-encrypted. This tool removes protection tags only, not file-level encryption.';
+  return 'Something went wrong: ' + m;
+}
+
+function isValidZip(buf) {
+  const b = new Uint8Array(buf, 0, 4);
+  return b[0] === 0x50 && b[1] === 0x4B;
+}
+
+// ── Sheet name map from workbook relationships ────────────────────────────────
+async function getSheetNameMap(zip) {
+  const map = {};
+  try {
+    const relsEntry = zip.files['xl/_rels/workbook.xml.rels'];
+    const wbEntry   = zip.files['xl/workbook.xml'];
+    if (!relsEntry || !wbEntry) return map;
+
+    const relsText = await relsEntry.async('text');
+    const wbText   = await wbEntry.async('text');
+
+    const rIdToPath = {};
+    for (const m of relsText.matchAll(/Id="([^"]+)"[^>]*Target="([^"]+)"/gi)) {
+      const target = m[2].replace(/\.\.\//g, '');
+      rIdToPath[m[1]] = 'xl/' + target;
+    }
+
+    for (const m of wbText.matchAll(/<sheet\b([^/]*?)(?:\/?>)/gi)) {
+      const attrs = m[1];
+      const nameM = attrs.match(/\bname="([^"]+)"/i);
+      const ridM  = attrs.match(/\br:id="([^"]+)"/i);
+      if (nameM && ridM) {
+        const path = rIdToPath[ridM[1]];
+        if (path) map[path] = nameM[1];
+      }
+    }
+  } catch (_) {}
+  return map;
+}
+
+// ── Dispatch ─────────────────────────────────────────────────────────────────
+async function handleFiles(files) {
+  if (files.length === 1) {
+    await scanForSelection(files[0]);
+  } else {
+    await processBatch(files);
   }
+}
 
+// ── Single-file: scan then show sheet selection ───────────────────────────────
+async function scanForSelection(file) {
   uploadCard.style.display = 'none';
-  resultCard.style.display = 'block';
-  resetBtn.style.display = 'none';
-
-  document.getElementById('fname').textContent = file.name;
-  document.getElementById('fsize').textContent = fmtSize(file.size);
-  document.getElementById('log').innerHTML = '';
-  document.getElementById('error-box').style.display = 'none';
-  document.getElementById('success-row').style.display = 'none';
-  outputBlob = null;
-
-  const readingLog = addLog('loading', 'Reading file…');
-
   try {
     const buf = await file.arrayBuffer();
+    if (!isValidZip(buf)) throw new Error('not a zip file');
+
     const zip = await JSZip.loadAsync(buf);
+    const sheetNameMap = await getSheetNameMap(zip);
 
-    readingLog.querySelector('.dot-spin').className = 'dot dot-green';
-    readingLog.childNodes[1].textContent = ' File opened successfully';
+    pendingFile        = file;
+    pendingZip         = zip;
+    pendingSheets      = [];
+    pendingWbProtected = false;
 
-    addLog('loading', 'Scanning for protection…');
-
-    let sheetCount = 0;
-    let wbFixed = false;
-    const newZip = new JSZip();
+    const wbEntry = zip.files['xl/workbook.xml'];
+    if (wbEntry) {
+      const text = await wbEntry.async('text');
+      pendingWbProtected = /<workbookProtection/i.test(text);
+    }
 
     for (const [path, entry] of Object.entries(zip.files)) {
-      if (entry.dir) { newZip.folder(path); continue; }
-
-      let content = await entry.async('uint8array');
-
-      if (path === 'xl/workbook.xml') {
-        let text = new TextDecoder().decode(content);
-        if (/<workbookProtection/i.test(text)) {
-          text = text.replace(/<workbookProtection[^>]*\/?>/gi, '');
-          content = new TextEncoder().encode(text);
-          wbFixed = true;
-        }
-      } else if (/^xl\/worksheets\/.+\.xml$/i.test(path)) {
-        let text = new TextDecoder().decode(content);
-        if (/<sheetProtection/i.test(text)) {
-          text = text.replace(/<sheetProtection[^>]*\/?>/gi, '');
-          content = new TextEncoder().encode(text);
-          sheetCount++;
-        }
-      }
-
-      newZip.file(path, content, { binary: true });
+      if (entry.dir || !/^xl\/worksheets\/.+\.xml$/i.test(path)) continue;
+      const text = await entry.async('text');
+      pendingSheets.push({
+        path,
+        name: sheetNameMap[path] || ('Sheet ' + (pendingSheets.length + 1)),
+        protected: /<sheetProtection/i.test(text),
+      });
     }
 
-    document.getElementById('log').lastChild.remove();
-
-    if (wbFixed) addLog('ok', 'Workbook structure lock removed');
-    else addLog('info', 'No workbook-level lock found');
-
-    if (sheetCount > 0) addLog('ok', `Sheet protection removed from ${sheetCount} sheet${sheetCount > 1 ? 's' : ''}`);
-    else addLog('info', 'No sheet-level protection found');
-
-    const mimeType = /\.xlsm$/i.test(file.name)
-      ? 'application/vnd.ms-excel.sheet.macroEnabled.12'
-      : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
-
-    outputBlob = await newZip.generateAsync({ type: 'blob', mimeType, compression: 'DEFLATE' });
-    outputName = file.name.replace(/(\.\w+)$/, '_UNLOCKED$1');
-
-    addLog('ok', 'Done — ready to download');
-
-    const total = sheetCount + (wbFixed ? 1 : 0);
-    const badge = document.getElementById('result-badge');
-    if (total > 0) {
-      badge.textContent = `✓ ${total} protection${total > 1 ? 's' : ''} removed`;
-      badge.className = 'result-badge';
-    } else {
-      badge.textContent = '⚠ No protection found';
-      badge.className = 'result-badge warn';
+    if (!pendingWbProtected && !pendingSheets.some(s => s.protected)) {
+      await processFile(file, zip, null);
+      return;
     }
 
-    document.getElementById('success-row').style.display = 'flex';
-    resetBtn.style.display = 'block';
-
+    showSelectCard(file);
   } catch (err) {
-    const box = document.getElementById('error-box');
-    box.textContent = 'Error: ' + err.message;
-    box.style.display = 'block';
-    addLog('info', 'Processing failed');
+    resultCard.style.display = 'block';
+    document.getElementById('file-results').innerHTML =
+      `<div class="error-box" style="display:block;margin:1.5rem">${esc(friendlyError(err))}</div>`;
     resetBtn.style.display = 'block';
   }
 }
 
-function downloadFile() {
-  if (!outputBlob) return;
+function showSelectCard(file) {
+  document.getElementById('select-filename').textContent = file.name;
+  const list = document.getElementById('sheet-list');
+  list.innerHTML = '';
+
+  if (pendingWbProtected) {
+    const item = document.createElement('label');
+    item.className = 'sheet-item';
+    item.innerHTML = `<input type="checkbox" checked disabled value="__wb__">
+      <span class="sheet-name">Workbook structure lock</span>
+      <span class="sheet-badge badge-protected">Protected</span>`;
+    list.appendChild(item);
+  }
+
+  pendingSheets.forEach(sheet => {
+    const item = document.createElement('label');
+    item.className = 'sheet-item';
+    item.innerHTML = `<input type="checkbox" ${sheet.protected ? 'checked' : ''} value="${esc(sheet.path)}">
+      <span class="sheet-name">${esc(sheet.name)}</span>
+      <span class="sheet-badge ${sheet.protected ? 'badge-protected' : 'badge-clean'}">${sheet.protected ? 'Protected' : 'No lock'}</span>`;
+    list.appendChild(item);
+  });
+
+  selectCard.style.display = 'block';
+}
+
+function selectAll() {
+  document.querySelectorAll('#sheet-list input[type=checkbox]:not([disabled])').forEach(cb => cb.checked = true);
+}
+function deselectAll() {
+  document.querySelectorAll('#sheet-list input[type=checkbox]:not([disabled])').forEach(cb => cb.checked = false);
+}
+
+async function proceedUnlock() {
+  const selectedPaths = new Set(
+    [...document.querySelectorAll('#sheet-list input[type=checkbox]:not([disabled]):checked')].map(cb => cb.value)
+  );
+  selectCard.style.display = 'none';
+  await processFile(pendingFile, pendingZip, selectedPaths);
+}
+
+// ── Core: process single file ─────────────────────────────────────────────────
+async function processFile(file, zip, selectedPaths) {
+  uploadCard.style.display = 'none';
+  processedFiles = [];
+
+  resultCard.style.display = 'block';
+  document.getElementById('file-results').innerHTML = '';
+  document.getElementById('batch-actions').style.display = 'none';
+  resetBtn.style.display = 'none';
+
+  const resultEl = createFileResult(file.name, fmtSize(file.size));
+  document.getElementById('file-results').appendChild(resultEl);
+
+  try {
+    const { blob, wbFixed, sheetNames } = await unlockZip(zip, file.name, selectedPaths, resultEl);
+    const outputName = file.name.replace(/(\.\w+)$/, '_UNLOCKED$1');
+    finishResult(resultEl, blob, outputName, wbFixed, sheetNames);
+    processedFiles.push({ name: outputName, blob });
+  } catch (err) {
+    resultEl.querySelector('.error-box').textContent = friendlyError(err);
+    resultEl.querySelector('.error-box').style.display = 'block';
+    resultEl.querySelector('.progress-bar').style.display = 'none';
+  }
+
+  resetBtn.style.display = 'block';
+}
+
+// ── Core: batch ───────────────────────────────────────────────────────────────
+async function processBatch(files) {
+  uploadCard.style.display = 'none';
+  processedFiles = [];
+
+  resultCard.style.display = 'block';
+  document.getElementById('file-results').innerHTML = '';
+  document.getElementById('batch-actions').style.display = 'none';
+  resetBtn.style.display = 'none';
+
+  for (const file of files) {
+    const resultEl = createFileResult(file.name, fmtSize(file.size));
+    document.getElementById('file-results').appendChild(resultEl);
+
+    try {
+      const buf = await file.arrayBuffer();
+      if (!isValidZip(buf)) throw new Error('not a zip file');
+      const zip = await JSZip.loadAsync(buf);
+      const { blob, wbFixed, sheetNames } = await unlockZip(zip, file.name, null, resultEl);
+      const outputName = file.name.replace(/(\.\w+)$/, '_UNLOCKED$1');
+      finishResult(resultEl, blob, outputName, wbFixed, sheetNames);
+      processedFiles.push({ name: outputName, blob });
+    } catch (err) {
+      resultEl.querySelector('.error-box').textContent = friendlyError(err);
+      resultEl.querySelector('.error-box').style.display = 'block';
+      resultEl.querySelector('.progress-bar').style.display = 'none';
+      resultEl.querySelector('.success-row').style.display = 'flex';
+    }
+  }
+
+  if (processedFiles.length > 1) {
+    document.getElementById('batch-actions').style.display = 'flex';
+  }
+
+  resetBtn.style.display = 'block';
+}
+
+// ── Core: unlock ZIP ──────────────────────────────────────────────────────────
+async function unlockZip(zip, filename, selectedPaths, resultEl) {
+  const log          = resultEl.querySelector('.log');
+  const progressFill = resultEl.querySelector('.progress-fill');
+
+  function addLog(type, text) {
+    const li = document.createElement('li');
+    li.innerHTML = (type === 'loading' ? '<span class="dot-spin"></span>'
+                  : type === 'ok'      ? '<span class="dot dot-green"></span>'
+                  :                      '<span class="dot dot-gray"></span>') + esc(text);
+    log.appendChild(li);
+    return li;
+  }
+
+  const sheetNameMap = await getSheetNameMap(zip);
+  const scanLog = addLog('loading', 'Scanning for protection…');
+
+  let wbFixed = false;
+  const sheetNames = [];
+  const newZip = new JSZip();
+
+  for (const [path, entry] of Object.entries(zip.files)) {
+    if (entry.dir) { newZip.folder(path); continue; }
+
+    let content = await entry.async('uint8array');
+
+    if (path === 'xl/workbook.xml') {
+      let text = new TextDecoder().decode(content);
+      if (/<workbookProtection/i.test(text)) {
+        text = text.replace(/<workbookProtection[^>]*\/?>/gi, '');
+        content = new TextEncoder().encode(text);
+        wbFixed = true;
+      }
+    } else if (/^xl\/worksheets\/.+\.xml$/i.test(path)) {
+      const shouldProcess = selectedPaths === null || selectedPaths.has(path);
+      let text = new TextDecoder().decode(content);
+      if (shouldProcess && /<sheetProtection/i.test(text)) {
+        const name = sheetNameMap[path] || path.match(/sheet(\d+)\.xml$/i)?.[1] || path;
+        text = text.replace(/<sheetProtection[^>]*\/?>/gi, '');
+        content = new TextEncoder().encode(text);
+        sheetNames.push(name);
+      }
+    }
+
+    newZip.file(path, content, { binary: true });
+  }
+
+  scanLog.remove();
+
+  if (wbFixed)              addLog('ok',   'Workbook structure lock removed');
+  sheetNames.forEach(name => addLog('ok',  `"${name}" unlocked`));
+  if (!wbFixed && sheetNames.length === 0) addLog('info', 'No protection found');
+
+  const packLog = addLog('loading', 'Repacking file…');
+
+  const mimeType = /\.xlsm$/i.test(filename)
+    ? 'application/vnd.ms-excel.sheet.macroEnabled.12'
+    : 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
+
+  const blob = await newZip.generateAsync(
+    { type: 'blob', mimeType, compression: 'DEFLATE' },
+    meta => { progressFill.style.width = meta.percent.toFixed(0) + '%'; }
+  );
+
+  packLog.remove();
+  addLog('ok', 'Ready to download');
+
+  return { blob, wbFixed, sheetNames };
+}
+
+// ── UI helpers ────────────────────────────────────────────────────────────────
+function finishResult(resultEl, blob, outputName, wbFixed, sheetNames) {
+  const total = sheetNames.length + (wbFixed ? 1 : 0);
+  const badge = resultEl.querySelector('.result-badge');
+  badge.textContent = total > 0
+    ? `✓ ${total} protection${total > 1 ? 's' : ''} removed`
+    : '⚠ No protection found';
+  badge.className = 'result-badge' + (total === 0 ? ' warn' : '');
+
+  const dlBtn = resultEl.querySelector('.btn-download');
+  dlBtn.style.display = 'inline-flex';
+  dlBtn.onclick = () => triggerDownload(blob, outputName);
+
+  resultEl.querySelector('.progress-bar').style.display = 'none';
+  resultEl.querySelector('.success-row').style.display = 'flex';
+}
+
+function createFileResult(name, size) {
+  const div = document.createElement('div');
+  div.className = 'file-result';
+  div.innerHTML = `
+    <div class="file-row">
+      <div class="file-icon">
+        <svg width="24" height="24" viewBox="0 0 24 24" fill="none"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8l-6-6z" stroke="#1D9E75" stroke-width="1.5"/><path d="M14 2v6h6" stroke="#1D9E75" stroke-width="1.5"/><path d="M8 13h8M8 17h5" stroke="#1D9E75" stroke-width="1.5" stroke-linecap="round"/></svg>
+      </div>
+      <div class="file-meta">
+        <strong>${esc(name)}</strong>
+        <span>${size}</span>
+      </div>
+    </div>
+    <div class="progress-bar"><div class="progress-fill"></div></div>
+    <ul class="log"></ul>
+    <div class="error-box" style="display:none"></div>
+    <div class="success-row" style="display:none">
+      <div class="result-badge"></div>
+      <button class="btn-download" style="display:none">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v13M7 11l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+        Download
+      </button>
+    </div>`;
+  return div;
+}
+
+function triggerDownload(blob, name) {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(outputBlob);
-  a.download = outputName;
+  a.href = URL.createObjectURL(blob);
+  a.download = name;
   a.click();
   setTimeout(() => URL.revokeObjectURL(a.href), 10000);
 }
 
+async function downloadAll() {
+  if (!processedFiles.length) return;
+  const zip = new JSZip();
+  processedFiles.forEach(f => zip.file(f.name, f.blob));
+  const blob = await zip.generateAsync({ type: 'blob', compression: 'DEFLATE' });
+  triggerDownload(blob, 'unlocked_files.zip');
+}
+
 function reset() {
-  outputBlob = null;
+  processedFiles    = [];
+  pendingFile       = null;
+  pendingZip        = null;
+  pendingSheets     = [];
+  pendingWbProtected = false;
+
   uploadCard.style.display = 'block';
+  selectCard.style.display = 'none';
   resultCard.style.display = 'none';
-  resetBtn.style.display = 'none';
-  fileInput.value = '';
-  document.getElementById('log').innerHTML = '';
+  resetBtn.style.display   = 'none';
+  fileInput.value          = '';
   dropZone.classList.remove('active');
 }
