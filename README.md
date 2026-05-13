@@ -55,6 +55,3 @@ After unlocking, **avoid clicking the "Finalize" or "Lock" buttons** inside the 
 
 MIT — free to use, share, and modify.
 
----
-
-Made by [Francis Niño Moncada](https://github.com/trashpenguin)
