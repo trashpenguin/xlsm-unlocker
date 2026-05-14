@@ -175,21 +175,18 @@ function showSelectCard(file) {
     list.appendChild(item);
   }
 
-  pendingSheets.forEach(sheet => {
+  pendingSheets.filter(s => s.protected || s.hidden).forEach(sheet => {
     const item = document.createElement('label');
     item.className = 'sheet-item';
-    const checked = sheet.protected || sheet.hidden;
     let badgeClass, badgeText;
     if (sheet.protected && sheet.hidden) {
       badgeClass = 'badge-protected'; badgeText = 'Protected + Hidden';
     } else if (sheet.protected) {
       badgeClass = 'badge-protected'; badgeText = 'Protected';
-    } else if (sheet.hidden) {
-      badgeClass = 'badge-hidden'; badgeText = 'Hidden';
     } else {
-      badgeClass = 'badge-clean'; badgeText = 'No lock';
+      badgeClass = 'badge-hidden'; badgeText = 'Hidden';
     }
-    item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} value="${esc(sheet.path)}">
+    item.innerHTML = `<input type="checkbox" checked value="${esc(sheet.path)}">
       <span class="sheet-name">${esc(sheet.name)}</span>
       <span class="sheet-badge ${badgeClass}">${badgeText}</span>`;
     list.appendChild(item);
@@ -229,7 +226,7 @@ async function processFile(file, zip, selectedPaths) {
   try {
     const { blob, wbFixed, sheetNames, unhiddenNames } = await unlockZip(zip, file.name, selectedPaths, resultEl);
     const outputName = file.name.replace(/(\.\w+)$/, '_UNLOCKED$1');
-    finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames);
+    finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames, file);
     processedFiles.push({ name: outputName, blob });
   } catch (err) {
     resultEl.querySelector('.error-box').textContent = friendlyError(err);
@@ -362,7 +359,7 @@ async function unlockZip(zip, filename, selectedPaths, resultEl) {
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
-function finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames = []) {
+function finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames = [], originalFile = null) {
   const total = sheetNames.length + unhiddenNames.length + (wbFixed ? 1 : 0);
   const badge = resultEl.querySelector('.result-badge');
   badge.textContent = total > 0
@@ -373,6 +370,12 @@ function finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenN
   const dlBtn = resultEl.querySelector('.btn-download');
   dlBtn.style.display = 'inline-flex';
   dlBtn.onclick = () => triggerDownload(blob, outputName);
+
+  if (originalFile) {
+    const revertBtn = resultEl.querySelector('.btn-revert');
+    revertBtn.style.display = 'inline-flex';
+    revertBtn.onclick = () => triggerDownload(originalFile, originalFile.name);
+  }
 
   resultEl.querySelector('.progress-bar').style.display = 'none';
   resultEl.querySelector('.success-row').style.display = 'flex';
@@ -396,10 +399,16 @@ function createFileResult(name, size) {
     <div class="error-box" style="display:none"></div>
     <div class="success-row" style="display:none">
       <div class="result-badge"></div>
-      <button class="btn-download" style="display:none">
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v13M7 11l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-        Download
-      </button>
+      <div class="dl-actions">
+        <button class="btn-revert" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M3 12a9 9 0 1 0 9-9 9 9 0 0 0-6.364 2.636L3 8" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M3 3v5h5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          Original
+        </button>
+        <button class="btn-download" style="display:none">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M12 3v13M7 11l5 5 5-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/><path d="M5 20h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+          Download
+        </button>
+      </div>
     </div>`;
   return div;
 }

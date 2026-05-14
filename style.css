@@ -266,7 +266,8 @@ main {
 }
 .result-badge.warn { background: rgba(251,191,36,0.08); color: #fbbf24; }
 
-/* ── Download button ────────────────────────────────────────────────────────── */
+/* ── Download / revert buttons ──────────────────────────────────────────────── */
+.dl-actions { display: inline-flex; align-items: center; gap: 8px; }
 .btn-download {
   display: inline-flex; align-items: center; gap: 8px;
   background: var(--green); color: #fff; border: none;
@@ -276,6 +277,16 @@ main {
 }
 .btn-download:hover { background: var(--green-dark); }
 .btn-download:active { transform: scale(0.98); }
+.btn-revert {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--surface-2); color: var(--text-muted);
+  border: 1px solid var(--border);
+  padding: 10px 16px; border-radius: var(--radius-pill);
+  font-size: 13px; font-weight: 500; cursor: pointer;
+  transition: all 0.15s;
+}
+.btn-revert:hover { border-color: rgba(29,158,117,0.35); color: var(--text); }
+.btn-revert:active { transform: scale(0.98); }
 
 /* ── Reset button ───────────────────────────────────────────────────────────── */
 .btn-reset {
@@ -431,7 +442,8 @@ footer a:hover { text-decoration: underline; }
   main { padding: 3rem 1rem 4rem; }
   .trust-row { gap: 0.75rem 1.25rem; }
   .success-row { flex-direction: column; align-items: stretch; }
-  .btn-download { justify-content: center; }
+  .dl-actions { flex-direction: column; }
+  .btn-download, .btn-revert { justify-content: center; }
   .select-footer { flex-direction: column; align-items: stretch; }
   .select-footer .btn-download { justify-content: center; }
   .select-bulk { justify-content: center; }
