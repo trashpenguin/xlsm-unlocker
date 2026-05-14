@@ -74,18 +74,22 @@ function isValidZip(buf) {
   return b[0] === 0x50 && b[1] === 0x4B;
 }
 
-// ── Sheet name map from workbook relationships ────────────────────────────────
-async function getSheetNameMap(zip) {
-  const map = {};
+// ── Workbook metadata from relationships + workbook.xml ───────────────────────
+async function getWorkbookMeta(zip) {
+  const nameMap = {};
+  const rIdToPath = {};
+  const hiddenPaths = new Set();
+  let hasWbProtection = false;
   try {
     const relsEntry = zip.files['xl/_rels/workbook.xml.rels'];
     const wbEntry   = zip.files['xl/workbook.xml'];
-    if (!relsEntry || !wbEntry) return map;
+    if (!relsEntry || !wbEntry) return { nameMap, rIdToPath, hiddenPaths, hasWbProtection };
 
     const relsText = await relsEntry.async('text');
     const wbText   = await wbEntry.async('text');
 
-    const rIdToPath = {};
+    hasWbProtection = /<workbookProtection/i.test(wbText);
+
     for (const m of relsText.matchAll(/Id="([^"]+)"[^>]*Target="([^"]+)"/gi)) {
       const target = m[2].replace(/\.\.\//g, '');
       rIdToPath[m[1]] = 'xl/' + target;
@@ -93,15 +97,19 @@ async function getSheetNameMap(zip) {
 
     for (const m of wbText.matchAll(/<sheet\b([^/]*?)(?:\/?>)/gi)) {
       const attrs = m[1];
-      const nameM = attrs.match(/\bname="([^"]+)"/i);
-      const ridM  = attrs.match(/\br:id="([^"]+)"/i);
+      const nameM  = attrs.match(/\bname="([^"]+)"/i);
+      const ridM   = attrs.match(/\br:id="([^"]+)"/i);
+      const stateM = attrs.match(/\bstate="(?:hidden|veryHidden)"/i);
       if (nameM && ridM) {
         const path = rIdToPath[ridM[1]];
-        if (path) map[path] = nameM[1];
+        if (path) {
+          nameMap[path] = nameM[1];
+          if (stateM) hiddenPaths.add(path);
+        }
       }
     }
   } catch (_) {}
-  return map;
+  return { nameMap, rIdToPath, hiddenPaths, hasWbProtection };
 }
 
 // ── Dispatch ─────────────────────────────────────────────────────────────────
@@ -121,18 +129,12 @@ async function scanForSelection(file) {
     if (!isValidZip(buf)) throw new Error('not a zip file');
 
     const zip = await JSZip.loadAsync(buf);
-    const sheetNameMap = await getSheetNameMap(zip);
+    const { nameMap: sheetNameMap, hiddenPaths, hasWbProtection } = await getWorkbookMeta(zip);
 
     pendingFile        = file;
     pendingZip         = zip;
     pendingSheets      = [];
-    pendingWbProtected = false;
-
-    const wbEntry = zip.files['xl/workbook.xml'];
-    if (wbEntry) {
-      const text = await wbEntry.async('text');
-      pendingWbProtected = /<workbookProtection/i.test(text);
-    }
+    pendingWbProtected = hasWbProtection;
 
     for (const [path, entry] of Object.entries(zip.files)) {
       if (entry.dir || !/^xl\/worksheets\/.+\.xml$/i.test(path)) continue;
@@ -141,10 +143,11 @@ async function scanForSelection(file) {
         path,
         name: sheetNameMap[path] || ('Sheet ' + (pendingSheets.length + 1)),
         protected: /<sheetProtection/i.test(text),
+        hidden: hiddenPaths.has(path),
       });
     }
 
-    if (!pendingWbProtected && !pendingSheets.some(s => s.protected)) {
+    if (!pendingWbProtected && !pendingSheets.some(s => s.protected) && !pendingSheets.some(s => s.hidden)) {
       await processFile(file, zip, null);
       return;
     }
@@ -175,9 +178,20 @@ function showSelectCard(file) {
   pendingSheets.forEach(sheet => {
     const item = document.createElement('label');
     item.className = 'sheet-item';
-    item.innerHTML = `<input type="checkbox" ${sheet.protected ? 'checked' : ''} value="${esc(sheet.path)}">
+    const checked = sheet.protected || sheet.hidden;
+    let badgeClass, badgeText;
+    if (sheet.protected && sheet.hidden) {
+      badgeClass = 'badge-protected'; badgeText = 'Protected + Hidden';
+    } else if (sheet.protected) {
+      badgeClass = 'badge-protected'; badgeText = 'Protected';
+    } else if (sheet.hidden) {
+      badgeClass = 'badge-hidden'; badgeText = 'Hidden';
+    } else {
+      badgeClass = 'badge-clean'; badgeText = 'No lock';
+    }
+    item.innerHTML = `<input type="checkbox" ${checked ? 'checked' : ''} value="${esc(sheet.path)}">
       <span class="sheet-name">${esc(sheet.name)}</span>
-      <span class="sheet-badge ${sheet.protected ? 'badge-protected' : 'badge-clean'}">${sheet.protected ? 'Protected' : 'No lock'}</span>`;
+      <span class="sheet-badge ${badgeClass}">${badgeText}</span>`;
     list.appendChild(item);
   });
 
@@ -213,9 +227,9 @@ async function processFile(file, zip, selectedPaths) {
   document.getElementById('file-results').appendChild(resultEl);
 
   try {
-    const { blob, wbFixed, sheetNames } = await unlockZip(zip, file.name, selectedPaths, resultEl);
+    const { blob, wbFixed, sheetNames, unhiddenNames } = await unlockZip(zip, file.name, selectedPaths, resultEl);
     const outputName = file.name.replace(/(\.\w+)$/, '_UNLOCKED$1');
-    finishResult(resultEl, blob, outputName, wbFixed, sheetNames);
+    finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames);
     processedFiles.push({ name: outputName, blob });
   } catch (err) {
     resultEl.querySelector('.error-box').textContent = friendlyError(err);
@@ -244,9 +258,9 @@ async function processBatch(files) {
       const buf = await file.arrayBuffer();
       if (!isValidZip(buf)) throw new Error('not a zip file');
       const zip = await JSZip.loadAsync(buf);
-      const { blob, wbFixed, sheetNames } = await unlockZip(zip, file.name, null, resultEl);
+      const { blob, wbFixed, sheetNames, unhiddenNames } = await unlockZip(zip, file.name, null, resultEl);
       const outputName = file.name.replace(/(\.\w+)$/, '_UNLOCKED$1');
-      finishResult(resultEl, blob, outputName, wbFixed, sheetNames);
+      finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames);
       processedFiles.push({ name: outputName, blob });
     } catch (err) {
       resultEl.querySelector('.error-box').textContent = friendlyError(err);
@@ -277,11 +291,12 @@ async function unlockZip(zip, filename, selectedPaths, resultEl) {
     return li;
   }
 
-  const sheetNameMap = await getSheetNameMap(zip);
+  const { nameMap: sheetNameMap, rIdToPath } = await getWorkbookMeta(zip);
   const scanLog = addLog('loading', 'Scanning for protection…');
 
   let wbFixed = false;
   const sheetNames = [];
+  const unhiddenNames = [];
   const newZip = new JSZip();
 
   for (const [path, entry] of Object.entries(zip.files)) {
@@ -293,9 +308,21 @@ async function unlockZip(zip, filename, selectedPaths, resultEl) {
       let text = new TextDecoder().decode(content);
       if (/<workbookProtection/i.test(text)) {
         text = text.replace(/<workbookProtection[^>]*\/?>/gi, '');
-        content = new TextEncoder().encode(text);
         wbFixed = true;
       }
+      text = text.replace(/<sheet\b([^>]*?)(\/?>)/gi, (match, attrs, closing) => {
+        if (!/\bstate="(?:hidden|veryHidden)"/i.test(attrs)) return match;
+        const ridM = attrs.match(/\br:id="([^"]+)"/i);
+        if (!ridM) return match;
+        const sheetPath = rIdToPath[ridM[1]];
+        const shouldUnhide = selectedPaths === null || (sheetPath && selectedPaths.has(sheetPath));
+        if (!shouldUnhide) return match;
+        const nameM = attrs.match(/\bname="([^"]+)"/i);
+        unhiddenNames.push(nameM ? nameM[1] : (sheetPath || 'Unknown'));
+        const newAttrs = attrs.replace(/\s*\bstate="(?:hidden|veryHidden)"/gi, '');
+        return `<sheet${newAttrs}${closing}`;
+      });
+      content = new TextEncoder().encode(text);
     } else if (/^xl\/worksheets\/.+\.xml$/i.test(path)) {
       const shouldProcess = selectedPaths === null || selectedPaths.has(path);
       let text = new TextDecoder().decode(content);
@@ -312,9 +339,10 @@ async function unlockZip(zip, filename, selectedPaths, resultEl) {
 
   scanLog.remove();
 
-  if (wbFixed)              addLog('ok',   'Workbook structure lock removed');
-  sheetNames.forEach(name => addLog('ok',  `"${name}" unlocked`));
-  if (!wbFixed && sheetNames.length === 0) addLog('info', 'No protection found');
+  if (wbFixed)                    addLog('ok',   'Workbook structure lock removed');
+  sheetNames.forEach(name =>      addLog('ok',   `"${name}" unlocked`));
+  unhiddenNames.forEach(name =>   addLog('ok',   `"${name}" unhidden`));
+  if (!wbFixed && sheetNames.length === 0 && unhiddenNames.length === 0) addLog('info', 'No protection or hidden sheets found');
 
   const packLog = addLog('loading', 'Repacking file…');
 
@@ -330,12 +358,12 @@ async function unlockZip(zip, filename, selectedPaths, resultEl) {
   packLog.remove();
   addLog('ok', 'Ready to download');
 
-  return { blob, wbFixed, sheetNames };
+  return { blob, wbFixed, sheetNames, unhiddenNames };
 }
 
 // ── UI helpers ────────────────────────────────────────────────────────────────
-function finishResult(resultEl, blob, outputName, wbFixed, sheetNames) {
-  const total = sheetNames.length + (wbFixed ? 1 : 0);
+function finishResult(resultEl, blob, outputName, wbFixed, sheetNames, unhiddenNames = []) {
+  const total = sheetNames.length + unhiddenNames.length + (wbFixed ? 1 : 0);
   const badge = resultEl.querySelector('.result-badge');
   badge.textContent = total > 0
     ? `✓ ${total} protection${total > 1 ? 's' : ''} removed`

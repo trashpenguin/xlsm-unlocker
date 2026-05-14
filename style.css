@@ -318,6 +318,7 @@ main {
   font-weight: 500; white-space: nowrap;
 }
 .badge-protected { background: rgba(239,68,68,0.1); color: #f87171; }
+.badge-hidden { background: rgba(251,191,36,0.1); color: #fbbf24; }
 .badge-clean { background: rgba(29,158,117,0.1); color: #4ade80; }
 
 .select-footer {
